@@ -133,3 +133,8 @@ Adaptive tree method for GIF writing.
 
 Kornel Lesiński \
 `--lossy` option.
+
+## Download
+
+[![GitHub Latest](https://img.shields.io/github/v/release/numbereleven-a/gifsicle-windows)](https://github.com/numbereleven-a/gifsicle-windows/releases/latest)
+[![GitHub Downloads](https://img.shields.io/github/downloads/numbereleven-a/gifsicle-windows/total)](https://github.com/numbereleven-a/gifsicle-windows/releases)
