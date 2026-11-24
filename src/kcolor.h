@@ -25,12 +25,10 @@ typedef struct kcolor {
     int16_t a[3];
 } kcolor;
 
-#undef min
-#undef max
-#define min(a, b)       ((a) < (b) ? (a) : (b))
-#define max(a, b)       ((a) > (b) ? (a) : (b))
+#define kc_min(a, b)    ((a) < (b) ? (a) : (b))
+#define kc_max(a, b)    ((a) > (b) ? (a) : (b))
 
-#define KC_CLAMPV(v) (max(0, min((v), KC_MAX)))
+#define KC_CLAMPV(v)    (kc_max(0, kc_min((v), KC_MAX)))
 
 typedef union kacolor {
     kcolor k;
@@ -111,7 +109,7 @@ static inline uint32_t kc_distance(kcolor x, kcolor y) {
 
 /* return the luminance value for `*x`; result is between 0 and KC_MAX */
 static inline int kc_luminance(kcolor kc) {
-    return (55 * kc.a[0] + 183 * kc.a[1] + 19 * kc.a[2]) >> 8;
+    return (54 * kc.a[0] + 183 * kc.a[1] + 19 * kc.a[2]) >> 8;
 }
 
 /* set `*x` to the grayscale version of `*x`, transformed by luminance */
@@ -120,10 +118,11 @@ static inline kcolor kc_luminance_transform(int a0, int a1, int a2) {
        distance in RGB space. The weights for the R,G,B components in
        luminance space are 0.2126,0.7152,0.0722. (That's ITU primaries, which
        are compatible with sRGB; NTSC recommended our previous values,
-       0.299,0.587,0.114.) Using the proportional factors 55,183,19 we get a
-       scaled gray value between 0 and 255 * 257; dividing by 256 gives us
-       what we want. Thanks to Christian Kumpf, <kumpf@igd.fhg.de>, for
-       providing a patch. */
+       0.299,0.587,0.114.) The proportional factors 54,183,19 sum to 256, so
+       dividing by 256 gives a gray value between 0 and KC_MAX. (Factors
+       summing to more than 256 would overflow the kcolor component for
+       white.) Thanks to Christian Kumpf, <kumpf@igd.fhg.de>, for providing
+       a patch. */
     kcolor kc = kc_make8g(a0, a1, a2);
     kc.a[0] = kc.a[1] = kc.a[2] = kc_luminance(kc);
     return kc;
@@ -224,11 +223,7 @@ static inline int kd3_closest8g(kd3_tree* kd3, int a0, int a1, int a2) {
 
 /* disable color index `i` in `*kd3`: it will never be returned by
    `kd3_closest*` */
-static inline void kd3_disable(kd3_tree* kd3, int i) {
-    assert((unsigned) i < (unsigned) kd3->nitems);
-    assert(kd3->disabled < 0 || kd3->disabled == i);
-    kd3->disabled = i;
-}
+void kd3_disable(kd3_tree* kd3, int i);
 
 /* enable all color indexes in `*kd3` */
 static inline void kd3_enable_all(kd3_tree* kd3) {

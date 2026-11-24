@@ -49,23 +49,27 @@ append_color_transform(Gt_ColorTransform *list,
   if (trav) {
     trav->next = xform;
     return list;
-  } else
-    return xform;
+  }
+  return xform;
 }
 
+static void delete_color_changes(void *thunk);
+
+/* Delete the transforms in `list` that use `func`, or all transforms if
+   `func` is null. Returns the new list. */
 Gt_ColorTransform *
 delete_color_transforms(Gt_ColorTransform *list, color_transform_func func)
 {
-  Gt_ColorTransform *prev = 0, *trav = list;
-  while (trav) {
-    Gt_ColorTransform *next = trav->next;
-    if (trav->func == func) {
-      if (prev) prev->next = next;
-      else list = next;
-      Gif_Delete(trav);
+  Gt_ColorTransform** pprev = &list;
+  while (*pprev) {
+    Gt_ColorTransform* cur = *pprev;
+    if (!func || cur->func == func) {
+        *pprev = cur->next;
+        if (cur->func == &color_change_transformer)
+            delete_color_changes(cur->data);
+        Gif_Delete(cur);
     } else
-      prev = trav;
-    trav = next;
+        pprev = &cur->next;
   }
   return list;
 }
@@ -90,6 +94,17 @@ typedef struct Gt_ColorChange {
   Gif_Color old_color;
   Gif_Color new_color;
 } Gt_ColorChange;
+
+static void
+delete_color_changes(void *thunk)
+{
+  Gt_ColorChange *change = (Gt_ColorChange *)thunk;
+  while (change) {
+    Gt_ColorChange *next = change->next;
+    Gif_Delete(change);
+    change = next;
+  }
+}
 
 void
 color_change_transformer(Gif_Colormap *gfcm, void *thunk)
@@ -159,22 +174,30 @@ pipe_color_transformer(Gif_Colormap *gfcm, void *thunk)
 #ifdef HAVE_MKSTEMP
   {
     mode_t old_mode = umask(077);
-    if (mkstemp(tmp_file) < 0)
-      fatal_error("can%,t create temporary file!");
+    int fd = mkstemp(tmp_file);
     umask(old_mode);
+    if (fd < 0) {
+      error(1, "can%,t create temporary file: %s", strerror(errno));
+      return;
+    }
+    close(fd);
   }
 #else
-  if (!tmp_file)
-    fatal_error("can%,t create temporary file!");
+  if (!tmp_file) {
+    error(1, "can%,t create temporary file");
+    return;
+  }
 #endif
 
   new_command_sz = strlen(command) + strlen(tmp_file) + 4;
   new_command = Gif_NewArray(char, new_command_sz);
   snprintf(new_command, new_command_sz, "%s  >%s", command, tmp_file);
   f = popen(new_command, "w");
-  if (!f)
-    fatal_error("can%,t run color transformation command: %s", strerror(errno));
   Gif_DeleteArray(new_command);
+  if (!f) {
+    error(1, "can%,t run color transformation command: %s", strerror(errno));
+    goto done;
+  }
 
   for (i = 0; i < gfcm->ncol; i++)
     fprintf(f, "%d %d %d\n", col[i].gfc_red, col[i].gfc_green, col[i].gfc_blue);
@@ -200,11 +223,12 @@ pipe_color_transformer(Gif_Colormap *gfcm, void *thunk)
 
   if (new_cm) {
     int nc = new_cm->ncol;
-    if (nc < gfcm->ncol) {
-      nc = gfcm->ncol;
+    if (nc < gfcm->ncol)
       warning(1, "too few colors in color transformation results");
-    } else if (nc > gfcm->ncol)
+    else if (nc > gfcm->ncol) {
       warning(1, "too many colors in color transformation results");
+      nc = gfcm->ncol;
+    }
     for (i = 0; i < nc; i++)
       col[i] = new_cm->col[i];
   }
@@ -227,25 +251,25 @@ combine_crop(Gt_Crop* dstcrop, const Gt_Crop* srccrop, const Gif_Image* gfi)
         dstcrop->x = dl;
         dstcrop->w = dr - dl;
     } else {
-        dstcrop->x = (cl <= 0 ? 0 : srccrop->w - 1) + (srccrop->left_offset - gfi->left);
+        dstcrop->x = (cl <= 0 || srccrop->w <= 0 ? 0 : srccrop->w - 1) + (srccrop->left_offset - gfi->left);
         dstcrop->w = 0;
     }
     if (dt < db) {
         dstcrop->y = dt;
         dstcrop->h = db - dt;
     } else {
-        dstcrop->y = (ct <= 0 ? 0 : srccrop->h - 1) + (srccrop->top_offset - gfi->top);
+        dstcrop->y = (ct <= 0 || srccrop->h <= 0 ? 0 : srccrop->h - 1) + (srccrop->top_offset - gfi->top);
         dstcrop->h = 0;
     }
 }
 
 
 /*****
- * crop image; returns true if the image exists
+ * crop image
  **/
 
-int
-crop_image(Gif_Image* gfi, Gt_Frame* fr, int preserve_total_crop)
+void
+crop_image(Gif_Image* gfi, Gt_Frame* fr)
 {
     Gt_Crop c;
     int j;
@@ -266,15 +290,17 @@ crop_image(Gif_Image* gfi, Gt_Frame* fr, int preserve_total_crop)
         gfi->top += c.y - fr->top_offset;
         gfi->width = c.w;
         gfi->height = c.h;
-    } else if (preserve_total_crop) {
-        Gif_MakeImageEmpty(gfi);
     } else {
-        Gif_DeleteArray(gfi->img);
-        gfi->img = 0;
-        gfi->width = gfi->height = 0;
+        /* The image was cropped out of existence. Keep an empty frame
+           (positioned inside the crop by combine_crop) to preserve its
+           delay, comments, and extensions. The original frame drew nothing
+           visible, so drop its disposal; background disposal of the empty
+           frame would erase a visible pixel. */
+        gfi->left += c.x - fr->left_offset;
+        gfi->top += c.y - fr->top_offset;
+        Gif_MakeImageEmpty(gfi);
+        gfi->disposal = GIF_DISPOSAL_NONE;
     }
-
-    return gfi->img != 0;
 }
 
 
@@ -325,7 +351,7 @@ rotate_image(Gif_Image* gfi, Gt_Frame* fr, int rotation)
   int x, y;
   int width = gfi->width;
   int height = gfi->height;
-  int ntop, nleft, nbottom, nright;
+  int ntop, nleft;
   uint8_t **img = gfi->img;
   uint8_t *new_data = Gif_NewArray(uint8_t, (unsigned) width * (unsigned) height);
   uint8_t *trav = new_data;
@@ -360,29 +386,13 @@ rotate_image(Gif_Image* gfi, Gt_Frame* fr, int rotation)
         fr->left_offset = y;
     }
   }
-  nbottom = ntop + width;
-  nright = nleft + height;
-
-  if (nbottom <= 0 || nright <= 0) {
-    ntop = nleft = nbottom = nright = 0;
-  } else if (ntop < 0 || nleft < 0) {
-    int nwidth = nright - (nleft < 0 ? 0 : nleft);
-    uint8_t *xdata;
-    xdata = Gif_NewArray(uint8_t, (unsigned) (nright - nleft) * (unsigned) (nbottom - ntop));
-    for (y = ntop < 0 ? -ntop : 0; y < width; ++y) {
-        memcpy(xdata + y * nwidth, new_data + y * height + (nleft < 0 ? -nleft : 0), nwidth);
-    }
-    Gif_DeleteArray(new_data);
-    new_data = xdata;
-    ntop = ntop < 0 ? 0 : ntop;
-    nleft = nleft < 0 ? 0 : nleft;
-  }
-
+  /* handle_flip_and_rotate clipped the image to the screen, so ntop and
+     nleft are nonnegative unless the screen is empty */
   Gif_ReleaseUncompressedImage(gfi);
-  gfi->width = nright - nleft;
-  gfi->height = nbottom - ntop;
-  gfi->left = nleft;
-  gfi->top = ntop;
+  gfi->width = height;
+  gfi->height = width;
+  gfi->left = nleft > 0 ? nleft : 0;
+  gfi->top = ntop > 0 ? ntop : 0;
   Gif_SetUncompressedImage(gfi, new_data, Gif_Free, 0);
 }
 
@@ -415,12 +425,8 @@ static void kcscreen_init(kcscreen* kcs, Gif_Stream* gfs, int sw, int sh) {
     kcs->height = sh <= 0 ? gfs->screen_height : sh;
     sz = kcs->width * kcs->height;
     kcs->data = Gif_NewArray(kacolor, sz);
-    if ((gfs->nimages == 0 || gfs->images[0]->transparent < 0)
-        && gfs->global && gfs->background < gfs->global->ncol) {
-        kcs->bg.k = kc_makegfcg(&gfs->global->col[gfs->background]);
-        kcs->bg.a[3] = KC_MAX;
-    } else
-        kcs->bg.a[0] = kcs->bg.a[1] = kcs->bg.a[2] = kcs->bg.a[3] = 0;
+    /* the background is transparent, as in browsers */
+    kcs->bg.a[0] = kcs->bg.a[1] = kcs->bg.a[2] = kcs->bg.a[3] = 0;
     for (i = 0; i != sz; ++i)
         kcs->data[i] = kcs->bg;
 }
@@ -501,11 +507,8 @@ static void ksscreen_init(ksscreen* kss, Gif_Stream* gfs, int sw, int sh) {
     kss->height = sh <= 0 ? gfs->screen_height : sh;
     sz = kss->width * kss->height;
     kss->data = Gif_NewArray(scale_color, sz);
-    if ((gfs->nimages == 0 || gfs->images[0]->transparent < 0)
-        && gfs->global && gfs->background < gfs->global->ncol) {
-        kss->bg = sc_makekc(kc_makegfcg(&gfs->global->col[gfs->background]));
-    } else
-        sc_clear(&kss->bg);
+    /* the background is transparent, as in browsers */
+    sc_clear(&kss->bg);
     for (i = 0; i != sz; ++i)
         kss->data[i] = kss->bg;
 }
@@ -516,26 +519,40 @@ static void ksscreen_cleanup(ksscreen* kss) {
     Gif_DeleteArray(kss->scratch);
 }
 
+/* set `*right` and `*bottom` to the edges of image `gfi`, clipped to screen
+   `kss`. Frames can extend past the logical screen; those parts are
+   invisible. Returns 0 if no part of `gfi` is on the screen. */
+static int ksscreen_clip(const ksscreen* kss, const Gif_Image* gfi,
+                         unsigned* right, unsigned* bottom) {
+    *right = (unsigned) gfi->left + gfi->width;
+    if (*right > kss->width)
+        *right = kss->width;
+    *bottom = (unsigned) gfi->top + gfi->height;
+    if (*bottom > kss->height)
+        *bottom = kss->height;
+    return gfi->left < *right && gfi->top < *bottom;
+}
+
 /* apply image `gfi` to screen `kss`, using the color array `ks` */
 static void ksscreen_apply(ksscreen* kss, const Gif_Image* gfi,
                            const kcolor* ks) {
-    int x, y;
-    assert((unsigned) gfi->left + gfi->width <= kss->width);
-    assert((unsigned) gfi->top + gfi->height <= kss->height);
+    unsigned x, y, right, bottom;
+    if (!ksscreen_clip(kss, gfi, &right, &bottom))
+        return;
 
     if (gfi->disposal == GIF_DISPOSAL_PREVIOUS) {
         if (!kss->scratch)
             kss->scratch = Gif_NewArray(scale_color, kss->width * kss->height);
-        for (y = gfi->top; y != gfi->top + gfi->height; ++y)
+        for (y = gfi->top; y != bottom; ++y)
             memcpy(&kss->scratch[y * kss->width + gfi->left],
                    &kss->data[y * kss->width + gfi->left],
-                   sizeof(scale_color) * gfi->width);
+                   sizeof(scale_color) * (right - gfi->left));
     }
 
-    for (y = gfi->top; y != gfi->top + gfi->height; ++y) {
+    for (y = gfi->top; y != bottom; ++y) {
         const uint8_t* linein = gfi->img[y - gfi->top];
         scale_color* lineout = &kss->data[y * kss->width + gfi->left];
-        for (x = 0; x != gfi->width; ++x)
+        for (x = 0; x != right - gfi->left; ++x)
             if (linein[x] != gfi->transparent)
                 lineout[x] = sc_makekc(ks[linein[x]]);
     }
@@ -543,18 +560,18 @@ static void ksscreen_apply(ksscreen* kss, const Gif_Image* gfi,
 
 /* dispose of image `gfi`, which was previously applied by ksscreen_apply */
 static void ksscreen_dispose(ksscreen* kss, const Gif_Image* gfi) {
-    int x, y;
-    assert((unsigned) gfi->left + gfi->width <= kss->width);
-    assert((unsigned) gfi->top + gfi->height <= kss->height);
+    unsigned x, y, right, bottom;
+    if (!ksscreen_clip(kss, gfi, &right, &bottom))
+        return;
 
     if (gfi->disposal == GIF_DISPOSAL_PREVIOUS) {
-        for (y = gfi->top; y != gfi->top + gfi->height; ++y)
+        for (y = gfi->top; y != bottom; ++y)
             memcpy(&kss->data[y * kss->width + gfi->left],
                    &kss->scratch[y * kss->width + gfi->left],
-                   sizeof(scale_color) * gfi->width);
+                   sizeof(scale_color) * (right - gfi->left));
     } else if (gfi->disposal == GIF_DISPOSAL_BACKGROUND) {
-        for (y = gfi->top; y != gfi->top + gfi->height; ++y)
-            for (x = gfi->left; x != gfi->left + gfi->width; ++x)
+        for (y = gfi->top; y != bottom; ++y)
+            for (x = gfi->left; x != right; ++x)
                 kss->data[y * kss->width + x] = kss->bg;
     }
 }
@@ -700,8 +717,12 @@ static void scale_image_output_row(scale_context* sctx, scale_color* sc,
     kacolor* oscr = &sctx->xscr.data[sctx->xscr.width * (yo + gfo->top)
                                      + gfo->left];
 
+    /* if the input image has no transparent color, output is opaque
+       wherever any input pixel contributed */
+    float min_alpha = sctx->gfi->transparent >= 0 ? KC_MAX / 4 : 0;
+
     for (xo = 0; xo != gfo->width; ++xo)
-        if (sc[xo].a[3] <= (int) (KC_MAX / 4))
+        if (sc[xo].a[3] <= min_alpha)
             oscr[xo] = kac_transparent();
         else {
             /* don't effectively mix partially transparent pixels with black */
@@ -709,8 +730,8 @@ static void scale_image_output_row(scale_context* sctx, scale_color* sc,
                 SCVEC_MULF(sc[xo], KC_MAX / sc[xo].a[3]);
             /* find closest color */
             for (k = 0; k != 3; ++k) {
-                int v = (int) (sc[xo].a[k] + 0.5);
-                oscr[xo].a[k] = KC_CLAMPV(v);
+                float v = sc[xo].a[k] + 0.5f;
+                oscr[xo].a[k] = v <= 0 ? 0 : v >= KC_MAX ? KC_MAX : (int) v;
             }
             oscr[xo].a[3] = KC_MAX;
         }
@@ -747,6 +768,20 @@ static int scale_image_add_colors(scale_context* sctx, Gif_Image* gfo) {
             break;
         kcdiversity_choose(&div, chosen, 0);
         gfc = kc_togfcg(kch.h[chosen].ka.k);
+        /* Rounding to 8 bits can yield a color already in the colormap
+           (the rounding error can exceed max_desired_dist); don't add it
+           again. */
+        if (Gif_FindColor(gfcm, &gfc) >= 0)
+            continue;
+        /* The transparent index can't hold an opaque color; give it a
+           disabled placeholder. */
+        if (gfcm->ncol == sctx->gfi->transparent) {
+            Gif_AddColor(gfcm, &gfc, gfcm->ncol);
+            kd3_add8g(sctx->kd3, gfc.gfc_red, gfc.gfc_green, gfc.gfc_blue);
+            kd3_disable(sctx->kd3, sctx->gfi->transparent);
+            if (gfcm->ncol == sctx->scale_colors)
+                break;
+        }
         Gif_AddColor(gfcm, &gfc, gfcm->ncol);
         kd3_add8g(sctx->kd3, gfc.gfc_red, gfc.gfc_green, gfc.gfc_blue);
         ++nadded;
@@ -782,8 +817,11 @@ static void scale_image_complete(scale_context* sctx, Gif_Image* gfo) {
                     }
                 }
                 max_dist = dist > max_dist ? dist : max_dist;
-            } else
+            } else if (transparent >= 0)
                 data[xo] = transparent;
+            else
+                /* no input pixel contributed, but the image is opaque */
+                data[xo] = kd3_closest_transformed(sctx->kd3, oscr[xo].a[3] ? oscr[xo].k : xscr[xo].k, &dist);
     }
 
     /* if the global colormap has changed, we must retry
@@ -793,6 +831,8 @@ static void scale_image_complete(scale_context* sctx, Gif_Image* gfo) {
         GLOBAL_COLORMAP_LOCK();
         if (gfcm->ncol > sctx->kd3->nitems) {
             scale_image_update_global_kd3(sctx);
+            if (transparent >= 0 && transparent < sctx->kd3->nitems)
+                kd3_disable(sctx->kd3, transparent);
             GLOBAL_COLORMAP_UNLOCK();
             goto retry;
         }
@@ -866,45 +906,35 @@ static inline pixel_range2 make_pixel_range2(int xi, int maxi,
 }
 
 static void scale_image_data_box(scale_context* sctx, Gif_Image* gfo) {
-    uint16_t* xoff = Gif_NewArray(uint16_t, sctx->iscr.width);
+    pixel_range* xpr = Gif_NewArray(pixel_range, gfo->width);
     scale_color* sc = Gif_NewArray(scale_color, gfo->width);
-    int* nsc = Gif_NewArray(int, gfo->width);
-    int xi0, xi1, xo, yo, i, j;
+    int xo, yo, i, j;
     scale_image_prepare(sctx);
 
-    /* develop scale mapping of input -> output pixels */
-    for (xo = 0; xo != gfo->width; ++xo) {
-        pixel_range xpr = make_pixel_range(xo + gfo->left, sctx->oscr.width,
-                                           sctx->iscr.width, sctx->oxf);
-        for (i = xpr.lo; i != xpr.hi; ++i)
-            xoff[i] = xo;
-    }
-    xi0 = make_pixel_range(gfo->left, sctx->oscr.width,
-                           sctx->iscr.width, sctx->oxf).lo;
-    xi1 = make_pixel_range(gfo->left + gfo->width - 1, sctx->oscr.width,
-                           sctx->iscr.width, sctx->oxf).hi;
+    /* input column range for each output column; ranges overlap when
+       upscaling */
+    for (xo = 0; xo != gfo->width; ++xo)
+        xpr[xo] = make_pixel_range(xo + gfo->left, sctx->oscr.width,
+                                   sctx->iscr.width, sctx->oxf);
 
     /* walk over output image */
     for (yo = 0; yo != gfo->height; ++yo) {
         pixel_range ypr = make_pixel_range(yo + gfo->top, sctx->oscr.height,
                                            sctx->iscr.height, sctx->oyf);
-        for (xo = 0; xo != gfo->width; ++xo)
+
+        for (xo = 0; xo != gfo->width; ++xo) {
+            /* collect input mix */
             sc_clear(&sc[xo]);
-        for (xo = 0; xo != gfo->width; ++xo)
-            nsc[xo] = 0;
-
-        /* collect input mixes */
-        for (j = ypr.lo; j != ypr.hi; ++j) {
-            const scale_color* indata = &sctx->iscr.data[sctx->iscr.width*j];
-            for (i = xi0; i != xi1; ++i) {
-                ++nsc[xoff[i]];
-                SCVEC_ADDV(sc[xoff[i]], indata[i]);
+            for (j = ypr.lo; j != ypr.hi; ++j) {
+                const scale_color* indata = &sctx->iscr.data[sctx->iscr.width*j];
+                for (i = xpr[xo].lo; i != xpr[xo].hi; ++i)
+                    SCVEC_ADDV(sc[xo], indata[i]);
             }
-        }
 
-        /* scale channels */
-        for (xo = 0; xo != gfo->width; ++xo)
-            SCVEC_DIVF(sc[xo], (float) nsc[xo]);
+            /* scale channels */
+            SCVEC_DIVF(sc[xo], (float) ((ypr.hi - ypr.lo)
+                                        * (xpr[xo].hi - xpr[xo].lo)));
+        }
 
         /* generate output */
         scale_image_output_row(sctx, sc, gfo, yo);
@@ -912,9 +942,8 @@ static void scale_image_data_box(scale_context* sctx, Gif_Image* gfo) {
 
     scale_image_complete(sctx, gfo);
 
-    Gif_DeleteArray(xoff);
+    Gif_DeleteArray(xpr);
     Gif_DeleteArray(sc);
-    Gif_DeleteArray(nsc);
 }
 
 static inline float mix_factor(int val, const float bounds[2]) {
@@ -1152,10 +1181,15 @@ static void scale_image_data_lanczos3(scale_context* sctx, Gif_Image* gfo) {
 }
 
 
+static int scale_clip_coord(double v, int max) {
+    return v <= 0 ? 0 : v >= max ? max : (int) v;
+}
+
 static void scale_image(scale_context* sctx, int method) {
     Gif_Image* gfi = sctx->gfi;
     Gif_Image gfo;
     int was_compressed = (gfi->img == 0);
+    int left, top, right, bottom;
 
     /* Fri 9 Jan 1999: Fix problem with resizing animated GIFs: we scaled
        from left edge of the *subimage* to right edge of the subimage,
@@ -1173,15 +1207,28 @@ static void scale_image(scale_context* sctx, int method) {
     gfo.image_data = NULL;
     gfo.compressed = NULL;
 
-    gfo.left = (int) (gfi->left * sctx->ixf);
-    gfo.top = (int) (gfi->top * sctx->iyf);
-    gfo.width = (int) ceil((gfi->left + gfi->width) * sctx->ixf) - gfo.left;
-    gfo.height = (int) ceil((gfi->top + gfi->height) * sctx->iyf) - gfo.top;
+    /* clip to the output screen. Frames can extend past the logical screen;
+       those parts are invisible, and their scaled coordinates might not fit
+       in 16 bits (or an int). */
+    left = scale_clip_coord(gfi->left * sctx->ixf, sctx->oscr.width);
+    top = scale_clip_coord(gfi->top * sctx->iyf, sctx->oscr.height);
+    right = scale_clip_coord(ceil((gfi->left + gfi->width) * sctx->ixf),
+                             sctx->oscr.width);
+    bottom = scale_clip_coord(ceil((gfi->top + gfi->height) * sctx->iyf),
+                              sctx->oscr.height);
     /* account for floating point errors at bottom right edge */
     if ((unsigned) gfi->left + gfi->width == sctx->iscr.width)
-        gfo.width = sctx->oscr.width - gfo.left;
+        right = sctx->oscr.width;
     if ((unsigned) gfi->top + gfi->height == sctx->iscr.height)
-        gfo.height = sctx->oscr.height - gfo.top;
+        bottom = sctx->oscr.height;
+    if (left > right)
+        left = right;
+    if (top > bottom)
+        top = bottom;
+    gfo.left = left;
+    gfo.top = top;
+    gfo.width = right - left;
+    gfo.height = bottom - top;
 
     /* Point scaling method is special: rather than rendering the input
        image into a frame buffer, it works on per-frame data. Thus we must
@@ -1201,6 +1248,11 @@ static void scale_image(scale_context* sctx, int method) {
     }
 
     if (gfo.width == 0 || gfo.height == 0) {
+        /* keep the placeholder on the screen */
+        if (gfo.left >= sctx->oscr.width)
+            gfo.left = sctx->oscr.width - 1;
+        if (gfo.top >= sctx->oscr.height)
+            gfo.top = sctx->oscr.height - 1;
         gfo.width = gfo.height = 1;
         Gif_CreateUncompressedImage(&gfo, 0);
         gfo.image_data[0] = gfo.transparent = 0;
@@ -1240,49 +1292,52 @@ static void scale_image(scale_context* sctx, int method) {
 
 #if ENABLE_THREADS
 typedef struct {
-    pthread_t threadid;
     Gif_Stream* gfs;
-    int imageno;
-    int* next_imageno;
+    int next_imageno;
     int nw;
     int nh;
     int scale_colors;
     int method;
 } scale_thread_context;
 
-#if !HAVE___SYNC_ADD_AND_FETCH
+#if !HAVE___SYNC_FETCH_AND_ADD
 static pthread_mutex_t next_imageno_lock = PTHREAD_MUTEX_INITIALIZER;
 #endif
 
 void* scale_image_threaded(void* args) {
     scale_thread_context* ctx = (scale_thread_context*) args;
     scale_context sctx;
+    int imageno;
     sctx_init(&sctx, ctx->gfs, ctx->nw, ctx->nh);
     sctx.scale_colors = ctx->scale_colors;
-    do {
-        sctx.imageno = ctx->imageno;
-        sctx.gfi = ctx->gfs->images[ctx->imageno];
-        scale_image(&sctx, ctx->method);
-#if HAVE___SYNC_ADD_AND_FETCH
-        ctx->imageno = __sync_add_and_fetch(ctx->next_imageno, 1);
+    while (1) {
+#if HAVE___SYNC_FETCH_AND_ADD
+        imageno = __sync_fetch_and_add(&ctx->next_imageno, 1);
 #else
         pthread_mutex_lock(&next_imageno_lock);
-        ctx->imageno = ++*ctx->next_imageno;
+        imageno = ctx->next_imageno++;
         pthread_mutex_unlock(&next_imageno_lock);
 #endif
-    } while (ctx->imageno < ctx->gfs->nimages);
+        if (imageno >= ctx->gfs->nimages)
+            break;
+        sctx.gfi = ctx->gfs->images[imageno];
+        sctx.imageno = imageno;
+        scale_image(&sctx, ctx->method);
+    }
     sctx_cleanup(&sctx);
     return 0;
 }
 #endif
 
-void
+/* Set *w and *h to the dimensions of a *w x *h image resized as requested.
+   Return -1 if the result would be larger than a GIF allows. */
+int
 resize_dimensions(int* w, int* h, double new_width, double new_height,
                   int flags)
 {
     if (new_width < 0.5 && new_height < 0.5)
         /* do nothing */
-        return;
+        return 0;
     else if (new_width < 0.5)
         new_width = *w * new_height / *h;
     else if (new_height < 0.5)
@@ -1290,26 +1345,22 @@ resize_dimensions(int* w, int* h, double new_width, double new_height,
 
     if (flags & GT_RESIZE_FIT) {
         double factor, xfactor, yfactor;
-        if (((flags & GT_RESIZE_FIT_DOWN)
-             && *w < new_width + 0.5
-             && *h < new_height + 0.5)
-            || ((flags & GT_RESIZE_FIT_UP)
-                && (*w >= new_width + 0.5
-                    || *h >= new_height + 0.5)))
-            return;
         xfactor = new_width / *w;
         yfactor = new_height / *h;
         if ((xfactor < yfactor) == !(flags & GT_RESIZE_MIN_DIMEN))
             factor = xfactor;
         else
             factor = yfactor;
+        if (((flags & GT_RESIZE_FIT_DOWN) && factor >= 1)
+            || ((flags & GT_RESIZE_FIT_UP) && factor <= 1))
+            return 0;
         new_width = *w * factor;
         new_height = *h * factor;
     }
 
     if (new_width >= GIF_MAX_SCREEN_WIDTH + 0.5
         || new_height >= GIF_MAX_SCREEN_HEIGHT + 0.5)
-        fatal_error("new image is too large (max size 65535x65535)");
+        return -1;
 
     *w = (int) (new_width + 0.5);
     *h = (int) (new_height + 0.5);
@@ -1319,23 +1370,33 @@ resize_dimensions(int* w, int* h, double new_width, double new_height,
         *w = 1;
     if (*h == 0)
         *h = 1;
+    return 0;
 }
 
-void
+/* Resize gfs. Return -1, after reporting an error, if the result would be
+   larger than a GIF allows. */
+int
 resize_stream(Gif_Stream* gfs,
               double new_width, double new_height,
-              int flags, int method, int scale_colors)
+              int flags, int method, int scale_colors,
+              int nthreads)
 {
-    int nw, nh, nthreads = thread_count, i;
+    int nw, nh, i;
+    scale_context sctx;
     (void) i;
 
     Gif_CalculateScreenSize(gfs, 0);
     assert(gfs->nimages > 0);
+    if (gfs->screen_width == 0 || gfs->screen_height == 0)
+        return 0;
     nw = gfs->screen_width;
     nh = gfs->screen_height;
-    resize_dimensions(&nw, &nh, new_width, new_height, flags);
+    if (resize_dimensions(&nw, &nh, new_width, new_height, flags) < 0) {
+        error(1, "new image is too large (max size 65535x65535)");
+        return -1;
+    }
     if (nw == gfs->screen_width && nh == gfs->screen_height)
-        return;
+        return 0;
 
     /* no point to MIX or BOX method if we're expanding the image in
        both dimens */
@@ -1354,6 +1415,9 @@ resize_stream(Gif_Stream* gfs,
 
     if (nthreads > gfs->nimages)
         nthreads = gfs->nimages;
+    sctx_init(&sctx, gfs, nw, nh);
+    sctx.scale_colors = scale_colors;
+    sctx.imageno = 0;
 #if ENABLE_THREADS
     /* Threaded resize only works if the input image is unoptimized. */
     for (i = 0; nthreads > 1 && i < gfs->nimages; ++i)
@@ -1367,39 +1431,51 @@ resize_stream(Gif_Stream* gfs,
             warning(1, "image too complex for multithreaded resize, using 1 thread\n  (Try running the GIF through %<gifsicle -U%>.)");
             nthreads = 1;
         }
-    if (nthreads > 1) {
-        int next_imageno = nthreads - 1, i;
-        scale_thread_context* ctx = Gif_NewArray(scale_thread_context, nthreads);
-        for (i = 0; i < nthreads; ++i) {
-            ctx[i].gfs = gfs;
-            ctx[i].imageno = i;
-            ctx[i].next_imageno = &next_imageno;
-            ctx[i].nw = nw;
-            ctx[i].nh = nh;
-            ctx[i].scale_colors = scale_colors;
-            ctx[i].method = method;
-            pthread_create(&ctx[i].threadid, NULL, scale_image_threaded, &ctx[i]);
-        }
-        for (i = 0; i < nthreads; ++i)
-            pthread_join(ctx[i].threadid, NULL);
-        Gif_DeleteArray(ctx);
-    }
-#else
-    nthreads = 1;
-#endif
-
-    if (nthreads <= 1) {
-        scale_context sctx;
-        sctx_init(&sctx, gfs, nw, nh);
-        sctx.scale_colors = scale_colors;
-
-        for (sctx.imageno = 0; sctx.imageno < gfs->nimages; ++sctx.imageno) {
+    if (nthreads > 1 && scale_colors > 0 && gfs->global) {
+        /* Frames add colors to the global colormap in the order they
+           finish, so the output would depend on thread timing. Resize
+           frames in order until the colormap is full. */
+        while (sctx.imageno < gfs->nimages
+               && gfs->global->ncol < scale_colors) {
             sctx.gfi = gfs->images[sctx.imageno];
             scale_image(&sctx, method);
+            ++sctx.imageno;
         }
-        sctx_cleanup(&sctx);
+        if (nthreads > gfs->nimages - sctx.imageno)
+            nthreads = gfs->nimages - sctx.imageno;
     }
+    if (nthreads > 1) {
+        int i;
+        scale_thread_context stctx;
+        pthread_t* tids = Gif_NewArray(pthread_t, nthreads);
+        if (tids) {
+            stctx.gfs = gfs;
+            stctx.next_imageno = sctx.imageno;
+            stctx.nw = nw;
+            stctx.nh = nh;
+            stctx.scale_colors = scale_colors;
+            stctx.method = method;
+            for (i = 0; i < nthreads; ++i) {
+                if (pthread_create(&tids[i], NULL, scale_image_threaded, &stctx) != 0) {
+                    nthreads = i;
+                    break;
+                }
+            }
+            for (i = 0; i < nthreads; ++i)
+                pthread_join(tids[i], NULL);
+            Gif_DeleteArray(tids);
+            sctx.imageno = stctx.next_imageno;
+        }
+    }
+#endif
+
+    for (; sctx.imageno < gfs->nimages; ++sctx.imageno) {
+        sctx.gfi = gfs->images[sctx.imageno];
+        scale_image(&sctx, method);
+    }
+    sctx_cleanup(&sctx);
 
     gfs->screen_width = nw;
     gfs->screen_height = nh;
+    return 0;
 }

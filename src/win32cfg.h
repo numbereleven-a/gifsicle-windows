@@ -56,9 +56,6 @@
 /* Define to 1 if you have the <string.h> header file. */
 #define HAVE_STRING_H 1
 
-/* Define to 1 if you have the `strtoul' function. */
-#define HAVE_STRTOUL 1
-
 /* Define to 1 if you have the <sys/select.h> header file. */
 /* #undef HAVE_SYS_SELECT_H */
 
@@ -94,8 +91,8 @@
 /* Define to 1 if you have the `__builtin_shufflevector' function. */
 /* #undef HAVE___BUILTIN_SHUFFLEVECTOR */
 
-/* Define to 1 if you have the `__sync_add_and_fetch' function. */
-/* #undef HAVE___SYNC_ADD_AND_FETCH */
+/* Define to 1 if you have the `__sync_fetch_and_add' function. */
+/* #undef HAVE___SYNC_FETCH_AND_ADD */
 
 /* Define to write GIFs to stdout even when stdout is a terminal. */
 /* #undef OUTPUT_GIF_TO_TERMINAL */
@@ -110,7 +107,7 @@
 #define PACKAGE_NAME "gifsicle"
 
 /* Define to the full name and version of this package. */
-#define PACKAGE_STRING "gifsicle 1.96"
+#define PACKAGE_STRING "gifsicle 1.98"
 
 /* Define to the one symbol short name of this package. */
 #define PACKAGE_TARNAME "gifsicle"
@@ -119,7 +116,7 @@
 #define PACKAGE_URL ""
 
 /* Define to the version of this package. */
-#define PACKAGE_VERSION "1.96"
+#define PACKAGE_VERSION "1.98"
 
 /* Pathname separator character ('/' on Unix). */
 #define PATHNAME_SEPARATOR '\\'
@@ -147,7 +144,7 @@
 #define STDC_HEADERS 1
 
 /* Version number of package */
-#define VERSION "1.96 (Windows)"
+#define VERSION "1.98 (Windows)"
 
 /* Define if X is not available. */
 #define X_DISPLAY_MISSING 1

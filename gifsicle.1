@@ -1,6 +1,6 @@
 .\" -*- mode: nroff -*-
 .AM
-.ds V 1.96
+.ds V 1.98
 .ds E " \-\- 
 .if t .ds E \(em
 .de Op
@@ -298,6 +298,27 @@ Suppress all warning messages.
 '
 Exit with status 1 when encountering a very erroneous GIF. Default is to
 muddle on.
+'
+.Sp
+.TP
+.Oa \-\-max\-screen width x height
+'
+Refuse to create logical screens larger than
+.IR width x height .
+The default is 16384x16384;
+.Op \-\-no\-max\-screen
+removes the limit. A GIF's logical screen grows to fit its first frame, so
+a small or corrupt GIF can call for an enormous screen, and some operations,
+such as
+.Op \-\-optimize
+and
+.Op \-\-unoptimize ,
+allocate memory in proportion to the screen. When an output's logical
+screen would exceed the limit, gifsicle reports an error and doesn't write
+that output; it also won't unoptimize such an input. The limit doesn't apply to an explicit
+.Op \-\-logical\-screen
+size or to resize options, but it does apply to frames that extend beyond
+an explicit logical screen.
 '
 .Sp
 .TP

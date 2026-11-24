@@ -179,15 +179,14 @@ merge_colormap_if_possible(Gif_Colormap *dest, Gif_Colormap *src)
 
   /* failure: a local colormap is required */
  local_colormap_required:
-    if (warn_local_colormaps == 1) {
-        static int context = 0;
-        if (!context) {
+    if (gtmsgs.warn_local_colormaps == 1) {
+        if (!gtmsgs.warn_local_colormaps_context) {
             warning(1, "too many colors, using local colormaps\n"
                     "  (You may want to try %<--colors 256%>.)");
-            context = 1;
+            gtmsgs.warn_local_colormaps_context = 1;
         } else
             warning(1, "too many colors, using local colormaps");
-        warn_local_colormaps = 2;
+        gtmsgs.warn_local_colormaps = 2;
     }
 
   /* 9.Dec.1998 - This must have been a longstanding bug! We MUST clear
@@ -204,8 +203,9 @@ merge_colormap_if_possible(Gif_Colormap *dest, Gif_Colormap *src)
 
 
 void
-merge_stream(Gif_Stream *dest, Gif_Stream *src, int no_comments)
+merge_stream(Gif_Stream *dest, Gif_Stream *src, int no_extensions_flag)
 {
+  Gif_Extension* gfex;
   int i;
   assert(dest->global);
 
@@ -219,20 +219,12 @@ merge_stream(Gif_Stream *dest, Gif_Stream *src, int no_comments)
   if (dest->loopcount < 0)
     dest->loopcount = src->loopcount;
 
-  if (src->end_comment && !no_comments) {
-    if (!dest->end_comment)
-      dest->end_comment = Gif_NewComment();
-    merge_comments(dest->end_comment, src->end_comment);
+  for (gfex = src->end_extensions.head; gfex; gfex = gfex->next) {
+    Gif_Extension* ngfex;
+    if (!(no_extensions_flag & extension_flag(gfex))
+        && (ngfex = Gif_CopyExtension(gfex)))
+      Gif_AppendExtension(&dest->end_extensions, ngfex);
   }
-}
-
-
-void
-merge_comments(Gif_Comment *destc, Gif_Comment *srcc)
-{
-  int i;
-  for (i = 0; i < srcc->count; i++)
-    Gif_AddComment(destc, srcc->str[i], srcc->len[i]);
 }
 
 
@@ -302,6 +294,12 @@ merge_image(Gif_Stream *dest, Gif_Stream *src, Gif_Image *srci,
               localcm->col[localcm->ncol] = imagecm->col[i];
               ++localcm->ncol;
           }
+      /* Undefined colors map to 0, so make sure color 0 exists. */
+      for (i = imagecm_ncol; i != 256 && localcm->ncol == 0; ++i)
+          if (inused[i]) {
+              GIF_SETCOLOR(&localcm->col[0], 0, 0, 0);
+              localcm->ncol = 1;
+          }
   }
 
   trivial_map = 1;
@@ -345,7 +343,6 @@ merge_image(Gif_Stream *dest, Gif_Stream *src, Gif_Image *srci,
   /* Make the new image. */
   desti = Gif_NewImage();
 
-  desti->identifier = Gif_CopyString(srci->identifier);
   if (srci->transparent > -1)
     desti->transparent = map[srci->transparent];
   desti->delay = srci->delay;
@@ -382,20 +379,15 @@ merge_image(Gif_Stream *dest, Gif_Stream *src, Gif_Image *srci,
   }
 
   /* comments and extensions */
-  if (srci->comment) {
-    desti->comment = Gif_NewComment();
-    merge_comments(desti->comment, srci->comment);
-  }
-  if (srci->extension_list && !srcfr->no_extensions) {
-      Gif_Extension* gfex;
-      for (gfex = srci->extension_list; gfex; gfex = gfex->next)
-          if (gfex->kind != 255 || !srcfr->no_app_extensions)
-              Gif_AddExtension(dest, desti, Gif_CopyExtension(gfex));
-  }
-  while (srcfr->extensions) {
-      Gif_Extension* next = srcfr->extensions->next;
-      Gif_AddExtension(dest, desti, srcfr->extensions);
-      srcfr->extensions = next;
+  {
+    int noexf = srcfr->no_extensions_flag | srcfr->frame_no_extensions_flag;
+    Gif_Extension* gfex;
+    for (gfex = srci->extensions.head; gfex; gfex = gfex->next) {
+      Gif_Extension* ngfex;
+      if (!(noexf & extension_flag(gfex))
+          && (ngfex = Gif_CopyExtension(gfex)))
+        Gif_AppendExtension(&desti->extensions, ngfex);
+    }
   }
 
   Gif_AddImage(dest, desti);

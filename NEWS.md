@@ -1,6 +1,53 @@
 Gifsicle NEWS
 =============
 
+## Version 1.98 – 15.Oct.2026
+
+* Add `--max-screen` option, which limits the size of logical screens to
+  avoid memory exhaustion. The default limit is 16384x16384;
+  `--no-max-screen` removes it.
+
+* Gifsicle and gifdiff always treat the background as transparent, as
+  browsers do.
+
+* Improve warnings and invalid GIF handling
+
+  * Warn when growing the logical screen to fit the first frame, and when an
+    output has no images.
+  * Don’t write compressed data that caused warnings when read, such as
+    “superfluous pixels”, or that has an LZW minimum code size above 8.
+  * Report truncated GIFs. Frames cut off before their image data, and
+    truncated extensions, are ignored.
+  * Errors found when reading GIFs do not affect exit status unless
+    `--no-ignore-errors` is given.
+
+* Bug fixes
+
+  * Fix several bugs in `--crop`, `--resize`, `--flip`, and `--rotate`,
+    including resize geometry flags `^<` and `^>`, `--resize-colors`,
+    `--resize-method=box`, and `--crop-transparency`.
+  * `--resize-colors` no longer makes some opaque pixels transparent.
+  * Fix bugs in `--lossy` (local colormaps, `--gamma` interaction),
+    `--dither=atkinson`, `--gray`, `--careful`, and unoptimization.
+  * Frame changes `--insert-before` and `--replace` use the most recent input.
+  * Fix memory-safety bugs found by auditing and fuzzing, including
+    use-after-free bugs and undefined behavior. Parse arguments more strictly.
+
+* Source repository gains fuzz testing harness.
+
+
+## Version 1.97 – 12.Oct.2026
+
+* `--use-exact-colormap` works with `-O` (Evgeny Vrublevsky).
+
+* Fix encoder’s handling of EOI at code size boundaries (Evgeny Vrublevsky
+  report).
+
+* Improve lossy encoder’s run length measurement.
+
+* Fix interactions between frame selections and frame changes.
+
+
 ## Version 1.96 – 26.Feb.2025
 
 * `--lossy` measures color errors uses the currently selected color space
@@ -259,7 +306,7 @@ Gifsicle NEWS
   produce large results less often, and when it does generate larger
   results, they're larger by hundreds of bytes, not hundreds of
   thousands. However, due to restrictions in the current optimizer (and
-  on my time), I was unable to improve `gifsicle -O3`'s handling of
+  on my time), I was unable to improve `gifsicle -O3`’s handling of
   these images. The optimizer that produced the images must be doing
   something pretty clever. (Is it SuperGIF?)
 
@@ -964,7 +1011,7 @@ Gifsicle NEWS
 * Changes to support Win32 port thanks to Emil Mikulic
   <darkmoon@connexus.net.au>.
 
-* Makefiles: Added `make uninstall` target, enabled `./configure`'s
+* Makefiles: Added `make uninstall` target, enabled `./configure`’s
   program name transformations, made VPATH builds possible.
 
 

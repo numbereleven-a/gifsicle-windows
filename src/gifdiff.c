@@ -53,7 +53,6 @@ static uint16_t *line;
 
 static int brief;
 static int ignore_redundancy;
-static int ignore_background;
 
 static Clp_Parser* clp;
 
@@ -93,6 +92,8 @@ static void
 expand_bounds(int *lf, int *tp, int *rt, int *bt, const Gif_Image *gfi)
 {
   int empty = (*lf >= *rt || *tp >= *bt);
+  if (gfi->width == 0 || gfi->height == 0)
+    return;
   if (empty || gfi->left < *lf)
     *lf = gfi->left;
   if (empty || gfi->top < *tp)
@@ -105,12 +106,12 @@ expand_bounds(int *lf, int *tp, int *rt, int *bt, const Gif_Image *gfi)
 
 
 static int
-apply_image(int is_second, Gif_Stream *gfs, int imageno, uint16_t background)
+apply_image(int is_second, Gif_Stream *gfs, int imageno)
 {
   int i, x, y, any_change;
   Gif_Image *gfi = gfs->images[imageno];
   Gif_Image *pgfi = imageno ? gfs->images[imageno - 1] : 0;
-  int width = gfi->width;
+  int width;
   uint16_t map[256];
   uint16_t *data = gdata[is_second];
   uint16_t *last = glast[is_second];
@@ -125,6 +126,12 @@ apply_image(int is_second, Gif_Stream *gfs, int imageno, uint16_t background)
   if (gfi->transparent >= 0 && gfi->transparent < 256)
     map[gfi->transparent] = TRANSP;
 
+  /* uncompress and clip. Frames can extend past the logical screen; clip
+     before using the frame's bounds */
+  Gif_UncompressImage(gfs, gfi);
+  Gif_ClipImage(gfi, 0, 0, screen_width, screen_height);
+  width = gfi->width;
+
   /* if this image's disposal is 'previous', save the post-disposal version in
      'scratch' */
   if (gfi->disposal == GIF_DISPOSAL_PREVIOUS) {
@@ -132,12 +139,8 @@ apply_image(int is_second, Gif_Stream *gfs, int imageno, uint16_t background)
     if (pgfi && pgfi->disposal == GIF_DISPOSAL_PREVIOUS)
       copy_area(scratch, last, pgfi->left, pgfi->top, pgfi->width, pgfi->height);
     else if (pgfi && pgfi->disposal == GIF_DISPOSAL_BACKGROUND)
-      fill_area(scratch, pgfi->left, pgfi->top, pgfi->width, pgfi->height, background);
+      fill_area(scratch, pgfi->left, pgfi->top, pgfi->width, pgfi->height, TRANSP);
   }
-
-  /* uncompress and clip */
-  Gif_UncompressImage(gfs, gfi);
-  Gif_ClipImage(gfi, 0, 0, screen_width, screen_height);
 
   any_change = imageno == 0;
   {
@@ -147,7 +150,7 @@ apply_image(int is_second, Gif_Stream *gfs, int imageno, uint16_t background)
       expand_bounds(&lf, &tp, &rt, &bt, pgfi);
     else if (pgfi && pgfi->disposal == GIF_DISPOSAL_BACKGROUND) {
       expand_bounds(&lf, &tp, &rt, &bt, pgfi);
-      fill_area(last, pgfi->left, pgfi->top, pgfi->width, pgfi->height, background);
+      fill_area(last, pgfi->left, pgfi->top, pgfi->width, pgfi->height, TRANSP);
     } else
       pgfi = 0;
     for (y = tp; y < bt; ++y) {
@@ -238,7 +241,7 @@ int
 compare(Gif_Stream *s1, Gif_Stream *s2)
 {
   Gif_Colormap *newcm;
-  int imageno1, imageno2, background1, background2;
+  int imageno1, imageno2;
   char buf1[256], buf2[256], fbuf[256];
 
   was_different = 0;
@@ -292,16 +295,8 @@ compare(Gif_Stream *s1, Gif_Stream *s2)
   for (imageno2 = 0; imageno2 < s2->nimages; ++imageno2)
     combine_colormaps(s2->images[imageno2]->local, newcm);
 
-  /* Choose the background values */
-  background1 = background2 = TRANSP;
-  if ((s1->nimages == 0 || s1->images[0]->transparent < 0)
-      && s1->global && s1->background < s1->global->ncol)
-      background1 = s1->global->col[ s1->background ].pixel;
-  if ((s2->nimages == 0 || s2->images[0]->transparent < 0)
-      && s2->global && s2->background < s2->global->ncol)
-      background2 = s2->global->col[ s2->background ].pixel;
-
-  /* Clear screens */
+  /* Clear screens. The background, and background disposal, are
+     transparent, as in browsers; the background color is ignored. */
   fill_area(gdata[0], 0, 0, screen_width, screen_height, TRANSP);
   fill_area(gdata[1], 0, 0, screen_width, screen_height, TRANSP);
 
@@ -313,8 +308,8 @@ compare(Gif_Stream *s1, Gif_Stream *s2)
   }
 
   /* Loop over frames, comparing image data and delays */
-  apply_image(0, s1, 0, background1);
-  apply_image(1, s2, 0, background2);
+  apply_image(0, s1, 0);
+  apply_image(1, s2, 0);
   imageno1 = imageno2 = 0;
   while (imageno1 != s1->nimages && imageno2 != s2->nimages) {
     int fi1 = imageno1, fi2 = imageno2,
@@ -341,30 +336,13 @@ compare(Gif_Stream *s1, Gif_Stream *s2)
         }
     }
 
-    /* compare background */
-    if (!ignore_background && background1 != background2
-        && (imageno1 == 0 || s1->images[imageno1 - 1]->disposal == GIF_DISPOSAL_BACKGROUND)
-        && (imageno2 == 0 || s2->images[imageno2 - 1]->disposal == GIF_DISPOSAL_BACKGROUND)) {
-        unsigned d, c = screen_width * screen_height;
-        uint16_t *d1 = gdata[0], *d2 = gdata[1];
-        for (d = 0; d < c; ++d, ++d1, ++d2)
-            if (*d1 == TRANSP || *d2 == TRANSP) {
-                name_color(background1, newcm, buf1, sizeof(buf1));
-                name_color(background2, newcm, buf2, sizeof(buf2));
-                different("frame %s background pixels differ: %d,%d <%s >%s",
-                          fbuf, d % screen_width, d / screen_width, buf1, buf2);
-                background1 = background2 = TRANSP;
-                break;
-            }
-    }
-
     /* move to next images, skipping redundancy */
     for (++imageno1;
-         imageno1 < s1->nimages && !apply_image(0, s1, imageno1, background1);
+         imageno1 < s1->nimages && !apply_image(0, s1, imageno1);
          ++imageno1)
       delay1 += s1->images[imageno1]->delay;
     for (++imageno2;
-         imageno2 < s2->nimages && !apply_image(1, s2, imageno2, background2);
+         imageno2 < s2->nimages && !apply_image(1, s2, imageno2);
          ++imageno2)
       delay2 += s2->images[imageno2]->delay;
 
@@ -417,7 +395,6 @@ Usage: %s [OPTION]... FILE1 FILE2\n\n", program_name);
 Options:\n\
   -q, --brief                   Don%,t report detailed differences.\n\
   -w, --ignore-redundancy       Ignore differences in redundant frames.\n\
-  -B, --ignore-background       Ignore differences in background colors.\n\
   -h, --help                    Print this message and exit.\n\
   -v, --version                 Print version number and exit.\n\
 \n\
@@ -580,11 +557,8 @@ particular purpose.\n");
       break;
 
      case IGNORE_BACKGROUND_OPT:
-      ignore_background = !clp->negated;
-      break;
-
      case BACKGROUND_OPT:
-      ignore_background = !!clp->negated;
+      /* obsolete: background colors don't affect appearance */
       break;
 
      case Clp_NotOption:

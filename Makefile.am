@@ -20,7 +20,17 @@ EXTRA_DIST = COPYING README.md NEWS.md \
 	test/008-resizemix.testie \
 	test/009-zerowidth.testie \
 	test/010-warnings.testie \
-	test/011-resizemix.testie
+	test/011-resizemix.testie \
+	test/012-framechange.testie \
+	test/013-exactcolormap.testie \
+	test/014-offscreen.testie \
+	test/015-extensions.testie \
+	test/016-insertselect.testie \
+	test/017-maxscreen.testie \
+	test/018-readerrors.testie \
+	test/019-truncated.testie \
+	test/020-geometry.testie \
+	test/021-resizetransparent.testie
 
 gifsicle: config.h
 	@cd src && $(MAKE) gifsicle
@@ -45,6 +55,6 @@ dist-ungif: dist
 	rm -rf ungifsicle-$(VERSION)
 
 check: all
-	$(top_srcdir)/test/testie -p $(top_builddir)/src $(top_srcdir)/test
+	$(top_srcdir)/test/testie -p $(top_builddir)/src -x fuzz $(top_srcdir)/test
 
 .PHONY: srclinks versionize rpm dist-ungif rpm-ungif check

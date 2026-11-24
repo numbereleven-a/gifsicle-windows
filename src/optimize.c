@@ -116,6 +116,30 @@ static void all_colormap_add(const Gif_Colormap* src) {
 }
 
 
+/* keep_out_global_map: Make out_global_map an unchanged copy of
+   in_global_map, and set all_colormap pixel values to match. Requires that
+   in_global_map was passed to all_colormap_add. Colors not in in_global_map
+   will go in local colormaps. */
+
+static void keep_out_global_map(void) {
+    int i;
+
+    /* capacity 256: prepare_colormap_map may store a transparent color
+       past ncol */
+    out_global_map = Gif_NewFullColormap(in_global_map->ncol, 256);
+    memcpy(out_global_map->col, in_global_map->col,
+           sizeof(Gif_Color) * in_global_map->ncol);
+
+    for (i = 1; i < all_colormap->ncol; ++i) {
+        all_colormap->col[i].pixel = NOT_IN_OUT_GLOBAL;
+    }
+    /* if a color appears more than once, use its lowest index */
+    for (i = in_global_map->ncol - 1; i >= 0; --i) {
+        all_colormap->col[in_global_map->col[i].pixel].pixel = i;
+    }
+}
+
+
 /*****
  * MANIPULATING IMAGE AREAS
  **/
@@ -324,7 +348,7 @@ prepare_colormap(Gif_Image *gfi, uint8_t *need)
  **/
 
 static int
-initialize_optimizer(Gif_Stream *gfs)
+initialize_optimizer(Gif_Stream *gfs, int optimize_flags)
 {
   int i;
 
@@ -360,7 +384,8 @@ initialize_optimizer(Gif_Stream *gfs)
       if (gfi->transparent >= 0 && first_transparent < 0)
         first_transparent = i;
     }
-    if (any_globals)
+    if (any_globals
+        || ((optimize_flags & GT_OPT_KEEPCOLORMAP) && gfs->global))
       all_colormap_add(in_global_map);
     kchist_cleanup(&all_colormap_hist);
 
@@ -400,12 +425,16 @@ finalize_optimizer(Gif_Stream *gfs, int optimize_flags)
   /* 11.Mar.2010 - remove entirely transparent frames. */
   for (i = 1; i < gfs->nimages && !(optimize_flags & GT_OPT_KEEPEMPTY); ++i) {
     Gif_Image *gfi = gfs->images[i];
-    if (gfi->width == 1 && gfi->height == 1 && gfi->transparent >= 0
-        && !gfi->identifier && !gfi->comment
+    if (gfi->width == 1
+        && gfi->height == 1
+        && gfi->transparent >= 0
+        && !gfi->extensions.head
         && (gfi->disposal == GIF_DISPOSAL_ASIS
             || gfi->disposal == GIF_DISPOSAL_NONE
             || gfi->disposal == GIF_DISPOSAL_PREVIOUS)
-        && gfi->delay && gfs->images[i-1]->delay) {
+        && gfi->delay
+        && gfs->images[i-1]->delay
+        && gfi->delay <= GIF_MAX_DELAY - gfs->images[i-1]->delay) {
       Gif_UncompressImage(gfs, gfi);
       if (gfi->img[0][0] == gfi->transparent
           && (gfs->images[i-1]->disposal == GIF_DISPOSAL_ASIS
@@ -448,20 +477,36 @@ finalize_optimizer(Gif_Stream *gfs, int optimize_flags)
 /* the interface function! */
 
 void
-optimize_fragments(Gif_Stream *gfs, int optimize_flags, int huge_stream)
+optimize_fragments(Gif_Stream* gfs, const Gt_OutputData* od, int huge_stream)
 {
-    if (!initialize_optimizer(gfs))
+    int optimize_flags = od->optimizing;
+    int ok;
+    if (od->colormap_fixed && od->colormap_fixed_exact) {
+        optimize_flags |= GT_OPT_KEEPCOLORMAP;
+    }
+    if (!initialize_optimizer(gfs, optimize_flags)) {
         return;
+    }
     if ((unsigned) all_colormap->ncol >= 0xFFFF) {
-        create_subimages32(gfs, optimize_flags, !huge_stream);
-        create_out_global_map32(gfs);
-        create_new_image_data32(gfs, optimize_flags);
+        ok = create_subimages32(gfs, optimize_flags, !huge_stream);
+        if (ok) {
+            create_out_global_map32(gfs, optimize_flags);
+            create_new_image_data32(gfs, optimize_flags);
+        }
         finalize_optimizer_data32();
     } else {
-        create_subimages16(gfs, optimize_flags, !huge_stream);
-        create_out_global_map16(gfs);
-        create_new_image_data16(gfs, optimize_flags);
+        ok = create_subimages16(gfs, optimize_flags, !huge_stream);
+        if (ok) {
+            create_out_global_map16(gfs, optimize_flags);
+            create_new_image_data16(gfs, optimize_flags);
+        }
         finalize_optimizer_data16();
     }
-    finalize_optimizer(gfs, optimize_flags);
+    if (ok)
+        finalize_optimizer(gfs, optimize_flags);
+    else {
+        if (in_global_map != gfs->global)
+            Gif_DeleteColormap(in_global_map);
+        Gif_DeleteColormap(all_colormap);
+    }
 }

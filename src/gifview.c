@@ -670,10 +670,10 @@ parse_geometry(const char *const_g, XSizeHints *sh, int screen_width,
   char *g = (char *)const_g;
   sh->flags = 0;
 
-  if (isdigit(*g)) {
+  if (isdigit((unsigned char) *g)) {
     sh->flags |= USSize;
     sh->width = strtol(g, &g, 10);
-    if (g[0] == 'x' && isdigit(g[1]))
+    if (g[0] == 'x' && isdigit((unsigned char) g[1]))
       sh->height = strtol(g + 1, &g, 10);
     else
       goto error;
@@ -819,7 +819,7 @@ set_viewer_name(Gt_Viewer *viewer, int slow_number)
 {
   Gif_Image *gfi;
   char *strs[2];
-  char *identifier;
+  const char *identifier = 0;
   XTextProperty name_prop;
   int im_pos = (slow_number >= 0 ? slow_number : viewer->im_pos);
   int len;
@@ -829,7 +829,8 @@ set_viewer_name(Gt_Viewer *viewer, int slow_number)
 
   gfi = viewer->im[im_pos];
   len = strlen(viewer->title) + strlen(viewer->name) + 14;
-  identifier = (slow_number >= 0 ? (char *)0 : gfi->identifier);
+  if (slow_number < 0)
+    identifier = Gif_ImageName(gfi);
   if (identifier)
     len += 2 + strlen(identifier);
 
@@ -1049,7 +1050,7 @@ frame_argument(Gt_Viewer *viewer, const char *arg)
   int n1 = 0;
 
   /* Get a number range (#x, #x-y, #x-, or #-y). First, read x. */
-  if (isdigit(c[0]))
+  if (isdigit((unsigned char) c[0]))
     n1 = strtol(arg, (char **)&c, 10);
 
   /* It really was a number range only if c is now at the end of the
@@ -1326,12 +1327,12 @@ main(int argc, char *argv[])
       break;
 
      case WINDOW_OPT:
-      cur_use_window = clp->val.ul;
+      cur_use_window = clp->val.l;
       cur_use_window_new = 0;
       break;
 
      case NEW_WINDOW_OPT:
-      cur_use_window = clp->val.ul;
+      cur_use_window = clp->val.l;
       cur_use_window_new = 1;
       break;
 

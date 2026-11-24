@@ -39,8 +39,7 @@ Gif_Colormap* colormap_median_cut(kchist* kch, Gt_OutputData* od)
     /* This code was written with reference to ppmquant by Jef Poskanzer,
        part of the pbmplus package. */
 
-    if (adapt_size < 2 || adapt_size > 256)
-        fatal_error("adaptive palette size must be between 2 and 256");
+    assert(adapt_size >= 2 && adapt_size <= 256); /* checked by --colors */
     if (adapt_size >= kch->n && !od->colormap_fixed)
         warning(1, "trivial adaptive palette (only %d %s in source)",
                 kch->n, kch->n == 1 ? "color" : "colors");
@@ -86,8 +85,8 @@ Gif_Colormap* colormap_median_cut(kchist* kch, Gt_OutputData* od)
             minc = maxc = trav->ka.k;
             for (i = 1, trav++; i < split->size; i++, trav++)
                 for (k = 0; k != 3; ++k) {
-                    minc.a[k] = min(minc.a[k], trav->ka.a[k]);
-                    maxc.a[k] = max(maxc.a[k], trav->ka.a[k]);
+                    minc.a[k] = kc_min(minc.a[k], trav->ka.a[k]);
+                    maxc.a[k] = kc_max(maxc.a[k], trav->ka.a[k]);
                 }
         }
 
@@ -136,13 +135,14 @@ Gif_Colormap* colormap_median_cut(kchist* kch, Gt_OutputData* od)
         double px[3];
         kchistitem* slice = &kch->h[ slots[i].first ];
         kcolor kc;
+        uint32_t pixel = slots[i].pixel ? slots[i].pixel : 1;
         px[0] = px[1] = px[2] = 0;
         for (j = 0; j != slots[i].size; ++j)
             for (k = 0; k != 3; ++k)
                 px[k] += slice[j].ka.a[k] * (double) slice[j].count;
-        kc.a[0] = (int) (px[0] / slots[i].pixel);
-        kc.a[1] = (int) (px[1] / slots[i].pixel);
-        kc.a[2] = (int) (px[2] / slots[i].pixel);
+        kc.a[0] = (int) (px[0] / pixel);
+        kc.a[1] = (int) (px[1] / pixel);
+        kc.a[2] = (int) (px[2] / pixel);
         adapt[i] = kc_togfcg(kc);
     }
 
@@ -292,8 +292,7 @@ colormap_diversity(kchist* kch, Gt_OutputData* od, int blend)
        with reference to XV's implementation of that algorithm by John Bradley
        <bradley@cis.upenn.edu> and Tom Lane <Tom.Lane@g.gp.cs.cmu.edu>. */
 
-    if (adapt_size < 2 || adapt_size > 256)
-        fatal_error("adaptive palette size must be between 2 and 256");
+    assert(adapt_size >= 2 && adapt_size <= 256); /* checked by --colors */
     if (adapt_size > kch->n && !od->colormap_fixed)
         warning(1, "trivial adaptive palette (only %d colors in source)", kch->n);
     if (adapt_size > kch->n)
@@ -571,9 +570,11 @@ colormap_image_atkinson(Gif_Image *gfi, uint8_t *all_new_data,
       c->haspixel = 1;
   }
 
-  /* Initialize Atkinson error vectors */
+  /* Initialize Atkinson error vectors. As in Floyd-Steinberg, the error for
+     pixel x is stored at index x+1; the extra slots catch errors propagated
+     past the image edges. */
   for (i = 0; i < 3; i++)
-    err[i] = Gif_NewArray(wkcolor, gfi->width + 2);
+    err[i] = Gif_NewArray(wkcolor, gfi->width + 3);
 
   /* Use the same random values on each call in an attempt to minimize
      "jumping dithering" effects on animations */
@@ -583,7 +584,7 @@ colormap_image_atkinson(Gif_Image *gfi, uint8_t *all_new_data,
       random_values[i] = RANDOM() % (DITHER_SCALE_M1 * 2) - DITHER_SCALE_M1;
   }
 
-  for (i = 0; i < gfi->width + 2; i++) {
+  for (i = 0; i < gfi->width + 3; i++) {
     j = (i + gfi->left) * 3;
     for (k = 0; k < 3; ++k)
         err[0][i].a[k] = random_values[ (j + k) % N_RANDOM_VALUES ];
@@ -591,15 +592,20 @@ colormap_image_atkinson(Gif_Image *gfi, uint8_t *all_new_data,
 
   kd3_build_xradius(kd3);
 
+  for (i = 0; i < gfi->width + 3; i++)
+    for (k = 0; k < 3; k++)
+      err[1][i].a[k] = 0;
+
   /* Do the image! */
   for (j = 0; j < gfi->height; j++) {
     uint8_t *data = &gfi->img[j][0];
     uint8_t *new_data = all_new_data + j * (unsigned) gfi->width;
 
-    /* Initialize error rows for this pass */
-    for (i = 0; i < gfi->width + 2; i++)
+    /* Initialize the error row two rows down; err[1] already holds errors
+       propagated from the previous rows */
+    for (i = 0; i < gfi->width + 3; i++)
       for (k = 0; k < 3; k++)
-        err[1][i].a[k] = err[2][i].a[k] = 0;
+        err[2][i].a[k] = 0;
 
     for (int x = 0; x < gfi->width; x++, data++, new_data++) {
       int e;
@@ -614,7 +620,7 @@ colormap_image_atkinson(Gif_Image *gfi, uint8_t *all_new_data,
       use = old_kc[*data];
 
       for (k = 0; k < 3; ++k)
-        use.a[k] = KC_CLAMPV(use.a[k] + err[0][x].a[k] / DITHER_SCALE);
+        use.a[k] = KC_CLAMPV(use.a[k] + err[0][x + 1].a[k] / DITHER_SCALE);
 
       /* Find the closest color in the colormap */
       e = old_cm->col[*data].pixel;
@@ -628,15 +634,12 @@ colormap_image_atkinson(Gif_Image *gfi, uint8_t *all_new_data,
          algorithm */
       for (k = 0; k < 3; ++k) {
         int e = (use.a[k] - kd3->ks[*new_data].a[k]) * DITHER_SCALE;
-        if (x + 1 < gfi->width) err[0][x + 1].a[k] += e / 8;
-        if (x + 2 < gfi->width) err[0][x + 2].a[k] += e / 8;
-        if (j + 1 < gfi->height) {
-          err[1][x].a[k] += e / 8;
-          err[1][x + 1].a[k] += e / 8;
-          if (x + 1 < gfi->width) err[1][x + 1].a[k] += e / 8;
-        }
-        if (j + 2 < gfi->height)
-          err[2][x].a[k] += e / 8;
+        err[0][x + 2].a[k] += e / 8;
+        err[0][x + 3].a[k] += e / 8;
+        err[1][x].a[k] += e / 8;
+        err[1][x + 1].a[k] += e / 8;
+        err[1][x + 2].a[k] += e / 8;
+        err[2][x + 1].a[k] += e / 8;
       }
     }
 
@@ -692,8 +695,7 @@ static int kc_line_closest(kcolor p0, kcolor p1, kcolor ref,
         p01.a[d] = p1.a[d] - p0.a[d];
         p0ref.a[d] = ref.a[d] - p0.a[d];
     }
-    den = (unsigned)
-        (p01.a[0]*p01.a[0] + p01.a[1]*p01.a[1] + p01.a[2]*p01.a[2]);
+    den = kc_distance(p0, p1);
     if (den == 0)
         return 0;
     /* NB: We've run out of bits of precision. We can calculate the
@@ -897,7 +899,8 @@ static void colormap_image_ordered(Gif_Image* gfi, uint8_t* all_new_data,
                                    uint32_t* histogram,
                                    const uint8_t* matrix) {
     int mw = matrix[0], mh = matrix[1], nplan = matrix[2];
-    uint8_t* plan = Gif_NewArray(uint8_t, nplan * old_cm->ncol);
+    /* plans are indexed by pixel value, which can exceed old_cm->ncol */
+    uint8_t* plan = Gif_NewArray(uint8_t, nplan * 256);
     int i, x, y;
 
     /* Written with reference to Joel Ylilouma's versions. */
@@ -1036,7 +1039,7 @@ colormap_stream(Gif_Stream* gfs, Gif_Colormap* new_cm, Gt_OutputData* od,
 {
   kd3_tree kd3;
   Gif_Color *new_col = new_cm->col;
-  int new_ncol = new_cm->ncol, new_gray;
+  int orig_ncol = new_cm->ncol, new_ncol = new_cm->ncol, new_gray;
   int imagei, j;
   assert(new_cm->capacity >= 256);
 
@@ -1091,10 +1094,12 @@ colormap_stream(Gif_Stream* gfs, Gif_Colormap* new_cm, Gt_OutputData* od,
       /* update count of used colors */
       for (j = 0; j < 256; j++)
         new_col[j].pixel += histogram[j];
-      if (gfi->transparent >= 0)
+      if (gfi->transparent >= 0) {
         /* we don't have data on the number of used colors for transparency
-           so fudge it. */
-        new_col[gfi->transparent].pixel += (unsigned) gfi->width * (unsigned) gfi->height / 8;
+           so fudge it; but always count it, so allow_shrink keeps it */
+        uint32_t fudge = (unsigned) gfi->width * (unsigned) gfi->height / 8;
+        new_col[gfi->transparent].pixel += fudge ? fudge : 1;
+      }
 
     } else {
       /* Can't compress new_cm afterwards if we didn't actively change colors
@@ -1107,9 +1112,17 @@ colormap_stream(Gif_Stream* gfs, Gif_Colormap* new_cm, Gt_OutputData* od,
       gfi->local = 0;
     }
 
-    /* 1.92: recompress *after* deleting the local colormap */
+    /* 1.92: recompress *after* deleting the local colormap. The image now
+       uses new_cm, so compress against it (--careful sizes codes from the
+       colormap). */
     if (gfcm && only_compressed) {
+        Gif_Colormap* old_global = gfs->global;
+        int old_ncol = new_cm->ncol;
+        gfs->global = new_cm;
+        new_cm->ncol = new_ncol;
         Gif_FullCompressImage(gfs, gfi, &gif_write_info);
+        new_cm->ncol = old_ncol;
+        gfs->global = old_global;
         Gif_ReleaseUncompressedImage(gfi);
     }
   }
@@ -1192,6 +1205,10 @@ colormap_stream(Gif_Stream* gfs, Gif_Colormap* new_cm, Gt_OutputData* od,
       }
     }
   }
+
+  /* new_cm may be shared with later outputs (--use-colormap), so remove any
+     transparent colors added to it */
+  new_cm->ncol = orig_ncol;
 }
 
 
@@ -1354,10 +1371,40 @@ static inline int halftone_pixel_compare(const void* va, const void* vb) {
         return a->angle < b->angle ? -1 : 1;
 }
 
+/* dither_ordered_new matrices are reference counted. The count is an int
+   stored just before the matrix data. */
+static uint8_t* dither_matrix_new(int size) {
+    int* refcount = (int*) Gif_NewArray(uint8_t, sizeof(int) + size);
+    *refcount = 1;
+    return (uint8_t*) (refcount + 1);
+}
+
+static int* dither_matrix_refcount(const Gt_OutputData* od) {
+    return (int*) od->dither_data - 1;
+}
+
+static void dither_release(Gt_OutputData* od) {
+    if (od->dither_type == dither_ordered_new) {
+        int* refcount = dither_matrix_refcount(od);
+        if (--*refcount == 0)
+            Gif_DeleteArray(refcount);
+    }
+    od->dither_type = dither_none;
+    od->dither_data = NULL;
+}
+
+void copy_dither(Gt_OutputData* dst, const Gt_OutputData* src) {
+    if (src->dither_type == dither_ordered_new)
+        ++*dither_matrix_refcount(src);
+    dither_release(dst);
+    dst->dither_type = src->dither_type;
+    dst->dither_data = src->dither_data;
+}
+
 static uint8_t* halftone_pixel_matrix(halftone_pixelinfo* hp,
                                       int w, int h, int nc) {
     int i;
-    uint8_t* m = Gif_NewArray(uint8_t, 4 + w * h);
+    uint8_t* m = dither_matrix_new(4 + w * h);
     m[0] = w;
     m[1] = h;
     m[3] = nc;
@@ -1410,14 +1457,19 @@ int set_dither_type(Gt_OutputData* od, const char* name) {
         name = buf;
     }
     for (nparm = 0;
-         comma && *comma && isdigit((unsigned char) comma[1]);
-         ++nparm)
-        parm[nparm] = strtol(&comma[1], (char**) &comma, 10);
+         nparm < 4 && comma && *comma && isdigit((unsigned char) comma[1]);
+         ++nparm) {
+        long v = strtol(&comma[1], (char**) &comma, 10);
+        parm[nparm] = v > 65535 ? 65535 : (int) v;
+    }
+    if (comma && *comma)
+        return -1;
+    /* matrices store the number of colors in a uint8_t */
+    if (nparm >= 2 && parm[1] > 255)
+        return -1;
 
     /* parse dither name */
-    if (od->dither_type == dither_ordered_new)
-        Gif_DeleteArray(od->dither_data);
-    od->dither_type = dither_none;
+    dither_release(od);
 
     if (strcmp(name, "none") == 0 || strcmp(name, "posterize") == 0)
         /* ok */;
@@ -1453,12 +1505,16 @@ int set_dither_type(Gt_OutputData* od, const char* name) {
                || strcmp(name, "trihalf") == 0) {
         int size = nparm >= 1 && parm[0] > 0 ? parm[0] : 6;
         int ncol = nparm >= 2 && parm[1] > 1 ? parm[1] : 2;
+        if (size > 147) /* matrix height (size * sqrt(3)) must fit in 255 */
+            return -1;
         od->dither_type = dither_ordered_new;
         od->dither_data = make_halftone_matrix_triangular(size, (int) (size * sqrt(3) + 0.5), ncol);
     } else if (strcmp(name, "sqhalftone") == 0 || strcmp(name, "sqhalf") == 0
                || strcmp(name, "squarehalftone") == 0) {
         int size = nparm >= 1 && parm[0] > 0 ? parm[0] : 6;
         int ncol = nparm >= 2 && parm[1] > 1 ? parm[1] : 2;
+        if (size > 255)
+            return -1;
         od->dither_type = dither_ordered_new;
         od->dither_data = make_halftone_matrix_square(size, size, ncol);
     } else
@@ -1467,7 +1523,7 @@ int set_dither_type(Gt_OutputData* od, const char* name) {
     if (od->dither_type == dither_ordered
         && nparm >= 2 && parm[1] > 1 && parm[1] != od->dither_data[3]) {
         int size = od->dither_data[0] * od->dither_data[1];
-        uint8_t* dd = Gif_NewArray(uint8_t, 4 + size);
+        uint8_t* dd = dither_matrix_new(4 + size);
         memcpy(dd, od->dither_data, 4 + size);
         dd[3] = parm[1];
         od->dither_data = dd;

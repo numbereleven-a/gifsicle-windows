@@ -1,5 +1,5 @@
 dnl Process this file with autoconf to produce a configure script.
-AC_INIT([gifsicle],[1.96])
+AC_INIT([gifsicle],[1.98])
 AC_PREREQ([2.69])
 AC_CONFIG_SRCDIR([src/gifsicle.h])
 AC_CONFIG_HEADERS([config.h])
@@ -120,14 +120,14 @@ fi
 AC_SUBST(GIFWRITE_O)
 
 dnl
-dnl random or rand, strerror, strtoul, mkstemp, snprintf
+dnl random or rand, strerror, mkstemp, snprintf
 dnl
 
 AC_CHECK_FUNC([random], [random_func=random], [random_func=rand])
 AC_DEFINE_UNQUOTED(RANDOM, ${random_func}, [Define to a function that returns a random number.])
 
 AC_REPLACE_FUNCS([strerror])
-AC_CHECK_FUNCS([strtoul mkstemp snprintf])
+AC_CHECK_FUNCS([mkstemp snprintf])
 AC_SEARCH_LIBS([pow], [m], [AC_DEFINE([HAVE_POW], [1], [Define to 1 if you have the `pow' function.])])
 AC_SEARCH_LIBS([cbrtf], [m], [AC_DEFINE([HAVE_CBRTF], [1], [Define to 1 if you have the `cbrtf' function.])])
 
@@ -238,12 +238,12 @@ dnl threads
 dnl
 
 AC_SEARCH_LIBS([pthread_create], [pthread], [have_threads=yes], [have_threads=no])
-AC_MSG_CHECKING([for __sync_add_and_fetch])
+AC_MSG_CHECKING([for __sync_fetch_and_add])
 AC_COMPILE_IFELSE([AC_LANG_PROGRAM(
     [AC_INCLUDES_DEFAULT
     extern volatile int x;],
-    [[printf("%d", __sync_add_and_fetch(&x, 1));]])],
-    [AC_DEFINE([HAVE___SYNC_ADD_AND_FETCH], 1, [Define to 1 if you have the `__sync_add_and_fetch' function.])
+    [[printf("%d", __sync_fetch_and_add(&x, 1));]])],
+    [AC_DEFINE([HAVE___SYNC_FETCH_AND_ADD], 1, [Define to 1 if you have the `__sync_fetch_and_add' function.])
     result=yes], [result=no])
 AC_MSG_RESULT([$result])
 
